@@ -14,8 +14,8 @@ and the control panel](docs/img/app.png)
 The 1-D isentropic figures are shown next to the simulated ones, so the cases where they diverge
 are visible.
 
-Measured performance, grid convergence and solver checks are in
-[docs/validation.md](docs/validation.md).
+Measured performance, grid convergence, solver checks and comparisons against flown hardware
+(V-2, F-1, RS-25, Traveler IV) are in [docs/validation.md](docs/validation.md).
 
 ## Requirements
 
@@ -48,17 +48,25 @@ treat it as ordinary fluid, so mass flow through the nozzle is an output rather 
 
 ### Parameters
 
+Controls spanning a few hundred steps or more, and every logarithmic one, are typed fields
+rather than sliders: a range input can only address as many values as it has pixels, and a
+throat radius running from 1 to 400 mm cannot be set to a particular number with a mouse.
+Logarithmic parameters are typed in their own units, so ambient pressure takes 0.64 for Mars
+rather than an exponent. Narrower controls stay as sliders, since dragging them is useful.
+
 | group | contents |
 |---|---|
 | Chamber & injector | chamber pressure, ignition rise time, chamber radius and length |
 | Propellant | six exhaust compositions as buttons; flame temperature, γ and R directly |
-| Nozzle | throat radius, exit radius, converging and diverging lengths, conical or bell contour |
+| Nozzle | throat radius, exit radius, converging and diverging lengths, conical / bell / aerospike, spike truncation |
 | Airframe | nose cone shape and length, forebody length, wall thickness |
 | Atmosphere | six worlds as buttons; ambient pressure (log, 10 Pa to 10 MPa), temperature, flight speed, surface gravity, γ and R directly |
-| Vehicle & flight | acceleration on/off, level / vertical / gravity-turn path, pitch-over speed and angle, dry and propellant mass, trajectory fast-forward |
+| Vehicle & flight | acceleration on/off, level / vertical / gravity-turn path, pitch-over speed and angle, dry and propellant mass, automatic or manual trajectory fast-forward |
 | Fluid | viscosity, Smagorinsky constant, tracer fade |
-| Domain & solver | plume domain length, radial domain, axial cell stretch, radial cells, CFL, frame budget |
+| Domain & solver | body-fitted nozzle grid, plume domain length, radial domain, axial cell stretch, radial cells, CFL, frame budget |
 | Measurement | position of the measurement plane relative to the exit |
+| Export | video field, format, resolution and bitrate; series CSV |
+| Validation | re-runs the checks behind docs/validation.md |
 
 ---
 
@@ -83,9 +91,69 @@ diamonds.
 
 ![Under-expanded nozzle with a train of shock diamonds](docs/img/underexpanded.png)
 
+### Body-fitted nozzle grid
+
+On by default. The radial coordinate is remapped per axial station so that a fixed share of the
+radial cells falls between the two walls of the nozzle passage, with grid lines running along
+the walls rather than across them. Outside the nozzle it relaxes back to the uniform grid.
+
+A uniform grid has to resolve a throat a millimetre across inside a domain a metre long, and
+pays for that spacing everywhere; the mapping decouples the two. The reference bell goes from
+12.8 to 30 cells across the throat at the same cell count, and its measured mass flow from
+89.8 % of ideal to 94.7 %. The plug nozzle reaches 84.0 % on a grid four times smaller and six
+times faster than the uniform one that gave 73.6 %. The switch is in **Domain & solver** if you
+want to compare.
+
+### Aerospike
+
+An aerospike replaces the outer wall of the divergent section with the ambient. Flow leaves an
+annular throat at the cowl lip and expands along a centrebody, so the outer boundary of the
+plume is set by ambient pressure rather than by a wall.
+
+![Aerospike, Mach number: annular chamber around the centrebody, the turn into the annular
+throat, and supersonic expansion along the spike](docs/img/aerospike-mach.png)
+
+Throat radius and exit radius keep their meaning. The exit radius is the cowl lip, and the rest
+of the geometry is derived from those two numbers so that the annular throat area equals
+pi*throat^2. Expansion ratio, choked mass flow and the 1-D performance figures are therefore the
+same as for a bell with the same two radii, and describe the design point.
+
+The centrebody is a method-of-characteristics contour, built by the Angelino
+straight-characteristic construction: exit Mach number comes from the area ratio, and the
+surface is the streamline that turns the flow back to axial through a single Prandtl-Meyer
+expansion centred on the lip. That puts the throat on a slant inclined at the Prandtl-Meyer
+angle of the exit Mach number, 48 degrees at epsilon 3.45, so the flow has to be turned before
+it reaches the throat. The turn is a pair of circular arcs about a common centre, three gap
+widths in radius, which holds the gap constant through the turn and brings the passage area down
+to the throat area and no further. Upstream of the turn the centrebody is a cylinder and the
+cowl carries the contraction, so the chamber is an annulus and setting an aerospike raises the
+chamber radius to hold the contraction ratio. **Spike length built** truncates the contour early
+and leaves a base, as real plug nozzles do to save mass.
+
+Three consequences for the measurements:
+
+- The annular throat is much thinner than a circular throat of the same area, and gets thinner
+  as expansion ratio rises: at epsilon 3.45 the gap is 4 mm against a 14 mm throat radius. Plug
+  nozzles need more radial resolution than bells. The panel reports cells across the gap and
+  asks for 25.
+- The plume has no wall to bound it, so the exit-plane integrals are bounded by the exhaust
+  tracer rather than by the exit radius. The panel reports the plume radius it found.
+- Mass flow is under-read once the gap is narrow. With a wide gap the plug nozzle matches a bell
+  exactly, at 91 % of the choked-throat figure; by epsilon 3.45 it reads about 70 %. The cause
+  is the wall treatment inside a narrow slot, and it falls with resolution. Effective exhaust
+  velocity is not affected and stays within a few percent of ideal, so rank plug-nozzle designs
+  on that rather than on absolute thrust.
+
+Compared against a bell of the same throat area and expansion ratio, effective exhaust velocity
+comes out within 5 % from heavily over-expanded to strongly under-expanded, with no useful
+altitude compensation at this expansion ratio. See
+[docs/validation.md](docs/validation.md) for why, and for the measurements behind all of this.
+
 ### Presets
 
-Eight, each setting nozzle, chamber, propellant and atmosphere together.
+Fourteen, each setting nozzle, chamber, propellant and atmosphere together. The last five are
+flown hardware, set up from published chamber conditions and area ratio, with the throat area
+derived from the published mass flow rather than fitted.
 
 | preset | configuration |
 |---|---|
@@ -96,7 +164,13 @@ Eight, each setting nozzle, chamber, propellant and atmosphere together.
 | Supersonic flight | pointy nose at Mach 2 at 10 km: bow shock, shoulder expansion, base flow |
 | Mars ascent | methalox into 0.64 kPa of CO₂, pressure ratio 3141 |
 | Venus surface | 250 bar against 92 bar back pressure, ε 1.1, Isp 159 s |
+| Aerospike | plug nozzle, ε 3.45, matched at sea level |
 | Titan flight | methalox at Mach 1.5 through cold dense nitrogen, with entrainment |
+| V-2 (A-4) | 1942, LOX/ethanol at 15 bar, ε 3.3, flown vertically as a sounding rocket |
+| F-1 | Saturn V first stage, LOX/RP-1 at 70 bar, ε 16 |
+| RS-25 | Shuttle main engine, hydrolox at 206 bar, ε 69 |
+| XRS-2200 | X-33 aerospike, hydrolox at 58 bar, ε 58. Annular here; the engine was linear |
+| Traveler IV | USC RPL 2019, the first student rocket past the Kármán line |
 
 ---
 
@@ -122,12 +196,31 @@ Rounded: ellipsoidal, zero slope at the shoulder.
 In all three the external flow separates off the base annulus and the plume acts as an
 aerodynamic body.
 
+### Reading the run
+
+The plot at the foot of the window takes any of twenty recorded series, chosen from the
+**Series** list: exit-plane velocity and Mach, thrust, drag, net force, mass flow, measured Isp,
+chamber and ambient pressure, and the whole trajectory state. Each is drawn to its own range,
+with current value and range in the key, since the units do not share a scale. The same twenty
+columns come out of **Export series CSV**, and exporting all fields writes the CSV alongside
+the video.
+
+Vertical flight stops itself at apogee, since the solver only represents nose-first flight into
+the freestream and nothing past that point is valid.
+
+Fast-forward is on automatic by default. A burn lasting seconds has to be paid for in
+milliseconds of flow time, and the flow needs about 2 ms to settle, so the ratio between them
+is bounded by how fast the conditions are allowed to move while the flow catches up. The panel
+reports the resulting trajectory error as a percentage rather than only complaining past a
+threshold; measured against the V-2 case it tracks the error in apogee closely.
+
 ### Thrust and drag
 
 Two integrals over separate surfaces.
 
-**Thrust** is the momentum-plus-pressure integral across the nozzle exit plane, over the exit
-area only: ∫(ρu² + p − p_ambient) dA.
+**Thrust** is the momentum-plus-pressure integral across the nozzle exit plane,
+∫(ρu² + p − p_ambient) dA, bounded by the exit radius for a bell and by the exhaust tracer for
+a plug nozzle.
 
 **Drag** is the (p − p_ambient) integral over the external wetted surface: nose, body and base
 annulus. It is computed one axial slab per thread. Each slab's surface spans a range of radii,

@@ -3,6 +3,14 @@
 Measurements taken with the shipped defaults unless stated otherwise. All timings are on an
 Apple M1.
 
+Most of what follows is re-runnable rather than transcribed. The **Validation** panel in the
+app runs 20 checks: published performance for the five hardware presets, the plug-nozzle
+contour against its design throat area across the expansion range, two one-dimensional
+identities, and six steady-state solver checks. Fast checks return at once; the full set takes
+about three minutes. `await validate('fast')` and `await validate('all')` do the same from the
+console and return the rows. Bands are one-sided where the quantity is an ideal figure real
+hardware cannot reach.
+
 ## Reference configuration
 
 Kerolox (γ 1.24, M 22.2 g/mol, T_c 3570 K) at 20 bar, through a 25 mm chamber, an 8 mm throat
@@ -88,6 +96,552 @@ predicts 9.6.
 
 Skin friction is excluded; see the note in the panel.
 
+## Cut cells
+
+Solid cells are masked rather than cut, so a wall that crosses a cell at an angle used to be
+rounded to whole cells. Each cell now also carries the fraction of its volume that is fluid and
+the open fraction of each of its faces, sampled 8 x 8 from the same `solidAt` that defines every
+other shape in the tool. Face fluxes are weighted by the open fraction, and the force the wall
+exerts follows from the aperture imbalance, which carries the true surface normal without that
+normal ever being formed: a uniform pressure over a closed surface exerts no net force, so the
+imbalance fixes the wall term exactly. With every aperture open the term reduces to `p/r`, the
+usual axisymmetric source, so an uncut cell is untouched.
+
+The fluid fraction is carried but not used to divide the flux sum. Dividing by it is the
+textbook cut cell and is conservative, but a sliver cell then sets the timestep for the whole
+grid: at a fluid fraction of 0.15 the effective CFL is nearly seven, and the solver diverges in
+under 10 microseconds. Using the full cell volume leaves a local O(h) smearing at the wall, the
+same order the scheme already carries there.
+
+No change to the cases that were already converged: the reference bell reads 90 % of ideal mass
+flow against 91 % before, on-axis exhaust velocity 2636 m/s against 2631, and flat-nose drag at
+Mach 2 is 257 N (C_D 1.48) against 261 N (C_D 1.50).
+
+## Body-fitted nozzle grid
+
+A uniform grid has to resolve a throat a millimetre across inside a domain a metre long, and
+pays for that spacing everywhere. The radial coordinate is now remapped per axial station so
+that a fixed share of the radial cells lies between the two walls of the nozzle passage, and
+grid lines run along the walls instead of cutting across them. Away from the nozzle the mapping
+relaxes to the uniform grid, so the plume and the external flow are unaffected.
+
+The mapping is stored on cell corners, which keeps neighbouring cells sharing a face exactly.
+Axial faces stay perpendicular to the axis and only their area changes; radial faces follow the
+mapping and carry a tilted normal, so the Riemann problem there is solved in the face frame and
+the flux rotated back. Cell volumes come from the revolved quadrilateral. The wall-pressure and
+hoop terms are written so that a uniform pressure produces exactly zero net force, which holds
+on the mapped grid because the face normals of a closed contour sum to zero and their radial
+components sum to the planar area.
+
+Same configurations, body fitting off and on:
+
+| case | grid | cells | cells across throat | wall time | mdot vs ideal | c vs ideal |
+|---|---|---|---|---|---|---|
+| bell, uniform | 450 x 112 | 50 k | 12.8 | 8 s | 89.8 % | 93 % |
+| bell, fitted | 450 x 112 | 50 k | 30.0 | 11 s | **94.7 %** | 93 % |
+| aerospike, uniform | 1020 x 256 | 261 k | 15.2 | ~180 s | 73.6 % | 96 % |
+| aerospike, fitted | 510 x 128 | 65 k | 19.2 | 29 s | **84.0 %** | **98.2 %** |
+| aerospike, uniform, matched cost | 510 x 128 | 65 k | 7.6 | 29 s | 58.4 % | 89.1 % |
+
+The bell gains five points of discharge on the same cell count for 1.4 times the run time, the
+extra cost being the smaller timestep the finer throat cells impose. The aerospike is the larger
+result: better than the uniform grid gave at four times the cell count and six times the run
+time, and at matched cost the comparison is 84.0 % against 58.4 %.
+
+Refinement still works through the throat rather than only the plume, because the share given to
+the passage has a floor rather than being a fixed cell count: at radial resolutions of 112, 128,
+192 and 256 the plug nozzle gets 17.9, 19.2, 22.1 and 29.4 cells across its annular gap.
+
+The case this was built for is the XRS-2200 preset, where the annular gap is a small fraction of
+the throat radius. A uniform grid puts 0.7 cells across it at 128 radial cells and 1.0 at 192;
+the mapping gives 4.9 and 8.0 at the same cost. That is still short of the 25 the discharge
+needs, and the geometry there is extreme, with the throat inclined 97 degrees, but it moves the
+case from unrepresentable to marginal.
+
+What the mapping does not change: flat-nose drag at Mach 2 reads 1.48 either way, and a uniform
+ambient still integrates to zero net force, so free-stream preservation survives the tilted
+faces.
+
+## Aerospike
+
+The plug nozzle is a method-of-characteristics contour whose annular throat area is set equal to
+pi*throat^2, so the 1-D reference figures are the same as for a bell with the same throat and
+exit radii.
+
+### Geometry
+
+A plug nozzle that expands entirely outside has to turn the flow by the full Prandtl-Meyer
+angle of its exit Mach number. That angle passes a right angle at an expansion ratio of about
+33 for gamma 1.22, and beyond it the Angelino construction folds over: the characteristic
+leaving the cowl lip points forwards, and the spike root comes out at a **larger** radius than
+the lip, which is not a nozzle at all. The tool used to build that geometry anyway and blame
+the grid for the result.
+
+Real plug nozzles do not work that way either. Above the limit, part of the expansion now
+happens inside an annular duct between the cowl and the spike and the rest on the spike, which
+is what internal-external expansion means and what engines of this kind actually do. The
+internal share is the smallest that keeps the external turn within 78 degrees, so nothing
+changes below the limit: at epsilon 3.4 and 8.2 the internal ratio is exactly 1 and the
+geometry is identical to the pure external one that was validated before.
+
+| epsilon | nu_e | internal ratio | external turn | spike root | cowl lip | throat gap |
+|---|---|---|---|---|---|---|
+| 3.4 | 48.3 deg | 1.00 | 48.3 deg | 23.4 | 26 | 3.44 mm |
+| 18.4 | 80.8 deg | 1.01 | 78 deg | 58.7 | 60 | 1.55 mm |
+| 32.7 | 89.3 deg | 1.13 | 78 deg | 78.3 | 80 | 1.20 mm |
+| 58.4 | 97.1 deg | 1.32 | 78 deg | 105.1 | 107 | 0.91 mm |
+| 204 | 111.4 deg | 1.91 | 78 deg | 198.0 | 200 | 0.49 mm |
+
+The spike root is inside the lip at every ratio, which is checked. Both walls are tabulated on
+one axial grid rather than solved analytically, because the duct has to diverge from its throat
+to the mouth of the external fan and a wall whose offset varies with turn angle cannot be
+inverted for z in closed form. That also collapses the shader's plug geometry to two lookups.
+
+The duct's own throat is at the head of the turn, where the passage is still axial, and its
+width is solved together with the turn radius so that annulus is exactly the throat area. The
+minimum passage area over all surfaces spanning the duct comes out within 5 % of the design
+throat area from epsilon 1 to 204.
+
+Resolution follows. The body-fitted mapping now fits the tabulated walls, holds full fitting
+through the throat rather than tapering across the whole nozzle, and looks for the throat where
+the duct is actually narrowest instead of at the cowl lip. Cells across the annular gap:
+
+| case | before | after |
+|---|---|---|
+| epsilon 3.4 | 19.2 | 29.7 |
+| epsilon 58 | 9.6 | 27.9 |
+| epsilon 100 | 1.9 | 24.1 |
+| XRS-2200 preset | 4.9 | 45.9 |
+
+The XRS-2200 case, which was previously beyond what the tool could represent, is now resolved
+better than the reference bell.
+
+### Contour construction
+
+The throat is inclined at the Prandtl-Meyer angle of the exit Mach number, which is 48 degrees
+at epsilon 3.45, so the flow has to be turned from axial before it gets there. The turn is a
+pair of circular arcs about a common centre, one for the centrebody and one for the cowl, three
+gap widths in radius. Concentric arcs keep the gap constant through the turn, which makes the
+passage area fall monotonically to exactly the throat area and no further. Upstream of the turn
+the centrebody is a cylinder and the cowl carries the whole contraction on a curve that is flat
+at both ends, so the inner wall has no curvature for the flow to separate off.
+
+Checked against the built geometry rather than the design formulae: walking the cowl surface and
+taking, for each point, the smallest revolved area of a segment spanning to the centrebody gives
+a minimum passage area equal to the design throat area to three figures, on the slant from the
+spike root to the cowl lip, at every expansion ratio from 1.07 to 8.2.
+
+The first version of this used cubic Hermite curves for both walls, with zero slope at the
+chamber and the throat angle at the root. Over a convergent section long compared with the
+radius change, that curve overshoots: the centrebody bulged outward and reached 56 degrees in
+mid-section before flattening to the design angle, and the flow separated off it. Measured mass
+flow at epsilon 1.31 was 75 % of ideal with the Hermite contour and is 89 % with the arcs.
+
+### Discharge
+
+Kerolox at 20 bar into still Earth air, throat 14 mm, 192 radial cells, t = 2.2 ms. Expansion
+ratio sets both the throat angle and the width of the annular gap.
+
+| epsilon | throat angle | gap | cells across gap | mdot vs ideal | c vs ideal |
+|---|---|---|---|---|---|
+| 1.07 | 6.7 deg | 10.6 mm | 30.9 | 91 % | 99 % |
+| 1.31 | 17.3 deg | 8.1 mm | 23.5 | 89 % | 99 % |
+| 1.99 | 32.9 deg | 5.6 mm | 16.4 | 81 % | 96 % |
+| 3.45 | 48.0 deg | 4.0 mm | 11.4 | 69 % | 93 % |
+| 3.45, 320 cells | 48.0 deg | 4.0 mm | 18.9 | 74 % | 102 % |
+
+At a wide gap the plug nozzle matches the bell exactly: 91 % is what the bell reads at the same
+chamber conditions. The deficit appears as the gap narrows, and it is mass flow only. Effective
+exhaust velocity stays within a few percent of ideal throughout, which is what makes the
+altitude comparison below usable.
+
+Four things it is not. It is not the geometry: the minimum passage area is the design throat
+area to three figures. It is not stagnation pressure loss upstream: following the peak-Mach
+streamline, total pressure holds at 18.8 to 19.1 bar from the injector all the way to M = 1.06,
+against 19.0 bar in the chamber. It is not viscous: with molecular viscosity and the Smagorinsky
+constant both set to zero the reading moves by one point. It is not the measurement: integrating
+the propellant mass flux across successive axial planes gives 76 % at the throat itself and 74 %
+at the exit plane 60 mm downstream, with nothing entering the radial sponge.
+
+What is left is the wall treatment inside a narrow slot. The flux profile across the throat shows
+a healthy sonic core with low-momentum layers on both walls, and those layers are a roughly fixed
+number of cells thick, so they cost a share of the gap that grows as the gap narrows. Turn radius
+confirms it: at epsilon 3.45 a radius of 1.5 gap widths reads 72 %, 3 reads 70 % and 6 reads
+62 %, which tracks the length of narrow annulus the flow has to traverse rather than the
+sharpness of the turn. Three gap widths is kept, being the usual floor for turning a duct without
+separating the inner wall.
+
+The panel reports cells across the gap and asks for 25.
+
+### Altitude response
+
+Bell and aerospike, same throat area and expansion ratio 3.45, identical grid and domain,
+t = 2.2 ms. Chamber pressure sets the expansion condition.
+
+| p_c | p_e/p_a | nozzle | mdot | vs ideal | thrust | c = F/mdot | vs ideal |
+|---|---|---|---|---|---|---|---|
+| 5 bar | 0.25, over-expanded | bell | 160 g/s | 92 % | 274 N | 1710 m/s | 111 % |
+| 5 bar | 0.25, over-expanded | aerospike | 131 g/s | 75 % | 222 N | 1695 m/s | 110 % |
+| 20 bar | 0.99, matched | bell | 639 g/s | 92 % | 1517 N | 2373 m/s | 96 % |
+| 20 bar | 0.99, matched | aerospike | 466 g/s | 67 % | 1057 N | 2266 m/s | 92 % |
+| 60 bar | 2.96, under-expanded | bell | 1917 g/s | 91 % | 4976 N | 2596 m/s | 97 % |
+| 60 bar | 2.96, under-expanded | aerospike | 1411 g/s | 67 % | 3570 N | 2531 m/s | 95 % |
+
+Effective exhaust velocity, aerospike divided by bell: 0.991 over-expanded, 0.955 matched, 0.975
+under-expanded. The plug nozzle is closest to the bell at the over-expanded end, which is the
+direction compensation would push, but the margin is a few percent across a 12:1 range of
+chamber pressure.
+
+No useful altitude compensation at this expansion ratio, and the reason is visible in the
+over-expanded row: both nozzles read above 100 % of the 1-D figure there. Fixed-geometry theory
+charges the full (p_e - p_a)*A_e debit over the whole exit area, which assumes the nozzle flows
+full; the real over-expanded bell separates, and the recirculating gas downstream of separation
+sits nearer ambient, so it pays less than the debit. Separation is the bell's own compensation
+mechanism at modest epsilon, and there is little for a plug nozzle to recover. Plug nozzles win
+at high expansion ratios, where separation moves far enough up the bell to be destructive; the
+annular gap at those ratios is a small fraction of the throat radius and is not resolvable on
+this grid.
+
+### Linear geometry
+
+A linear aerospike is a ramp extruded across a span, and away from its ends that flow has no
+curvature: a planar slice is the right model for it rather than an approximation. The solver
+takes a switch for this. Revolved, a face at radius r has area proportional to r; extruded, it
+does not, so every metric carries a weight that is either r or 1. The well-balanced pressure
+terms need no special case either way, because for a closed contour the face normals sum to
+zero and their radial components sum to the planar area, and both identities hold under either
+weighting.
+
+What changes above the solver is that the two nozzle radii become heights, so throat area is
+height times span rather than pi*r^2, and the expansion ratio is the ratio of the two rather
+than its square. The plug contour changes with it: mass conservation across a characteristic
+is a length rather than an area, which makes the construction simpler than the annular one.
+
+The point of it is the throat. Revolved, the throat is forced to A_t/(2*pi*r) and gets thinner
+the larger the exit is; extruded, it is whatever the controls ask for, and the span carries the
+area instead. For the XRS-2200 that is a 25.2 mm slot rather than a 12.26 mm one, and split
+across its twenty cells the aspect ratio per cell is 8.7 to 1 rather than 739 to 1 for a
+continuous ring. That is the difference between hardware and a drawing.
+
+**Status.** The geometry is verified: throat area is height times span to three figures, the
+minimum passage over all spanning surfaces is 1.000 times design, the throat height comes out
+exactly as set, and the axisymmetric path is unchanged with all its checks passing.
+
+Chasing the measured performance turned up two faults, one of which was affecting the
+axisymmetric solver as well.
+
+The first was a silent clamp. Turning a duct on a radius smaller than a couple of gap widths
+separates its inner wall, and the converging section is what has to hold the turn, so a taller
+throat needs proportionally more of it. A planar throat at a given expansion ratio is about four
+times taller than the annular one, and the converging length that was ample for a 3.4 mm annular
+gap forced the 14 mm planar one onto half a gap width. Nothing said so; mass flow was simply a
+quarter lower. Lengthening the converging section from 20 mm to 100 mm took it from 60 % to
+75 %. The panel now refuses this configuration outright and gives the length needed, and a check
+confirms no preset asks for a turn that will not fit.
+
+The second was the thrust integral. Mass flux was weighted by exhaust fraction and momentum flux
+was not, so a plug nozzle was credited with the momentum of entrained air, and near the base with
+air that is recirculating backwards through the measurement plane. That is why effective exhaust
+velocity kept reading above the ideal figure. Across a bell's exit the exhaust fraction is one
+and nothing changes; the axisymmetric plug moves from 100 % to 96 %.
+
+What is still open: a planar plug now reads 68 to 75 % against 79 % axisymmetric, and a planar
+bell 88 % against 94.7 %. Total pressure is flat at 18.9 bar from the injector through to Mach
+1.4, so the duct is clean and the shortfall is the throat not filling. The flux profile across
+it shows deficient layers on both walls. That is as far as this went; the switch stays off by
+default and its measured block is not to be trusted for plug nozzles yet.
+
+### Why the annular throat is so thin
+
+The throat of a plug nozzle is an annulus of area pi*throat^2 wrapped around the centrebody, so
+its width is set by the radius it has to go round. Working that through, the gap as a fraction
+of the lip radius is about 1/(2*epsilon), and that ratio is scale-invariant: making the engine
+bigger or smaller does not change it. Measured against the built geometry:
+
+| epsilon | gap / lip radius | 1/(2*epsilon) |
+|---|---|---|
+| 3.4 | 13.2 % | 14.5 % |
+| 8.2 | 5.6 % | 6.1 % |
+| 18.4 | 2.6 % | 2.7 % |
+| 32.7 | 1.50 % | 1.53 % |
+| 58.4 | 0.85 % | 0.86 % |
+| 100 | 0.50 % | 0.50 % |
+
+For the XRS-2200 preset that is a 12.26 mm slot around 9.0 m of circumference, an aspect ratio
+of 739 to 1. The arithmetic is exact rather than approximate: the annulus between the centrebody
+at 1435.8 mm and a gap of 12.256 mm has an area of 111,036 mm squared against a design throat
+area of 111,036, and the minimum passage over all spanning surfaces is 1.0002 times design.
+
+So the picture is right and the premise is the extreme part. A continuous annular slot of that
+aspect ratio is not something anyone would build, and that is exactly why high-expansion plug
+nozzles are made as a ring of separate thruster cells: the XRS-2200 had twenty. An axisymmetric
+solver cannot represent cells, so the preset is the annular equivalent and says so.
+
+### Nothing is silently overridden
+
+The XRS-2200 preset asked for a 500 mm chamber and the geometry used 1484 without saying
+anything, because for a plug nozzle the chamber radius is not free: the inner wall is fixed by
+the spike root and the turn, and the outer follows from the area the chamber needs. The
+contraction ratio is now an explicit control, the chamber radius is derived from it and
+reported as derived, and presets no longer declare a value the model is going to replace.
+
+That class of fault is now a check. Every value every preset declares has to survive into the
+model to within the control's own step, and the geometry has to use the radii it was given.
+
+### The XRS-2200 as an annular engine
+
+The real XRS-2200 is linear: twenty thruster cells along a ramp, about 2 m in every direction.
+This solver is axisymmetric, so the preset is the annular equivalent, which is a substitution
+worth being explicit about. Chamber pressure, expansion ratio and total throat area are the
+published ones, and the throat area is derived from the published mass flow rather than fitted:
+274 kg/s against 273. What does not carry over is the shape. Spreading the same throat area
+around a circumference instead of along a ramp puts the throat at 188 mm equivalent radius and
+the lip at 1432 mm, so the annular version is 2.9 m across where the real engine was about 2.2 m
+wide. The spike is truncated to 25 %, as plug nozzles are, giving a built length of 1.62 m and
+an engine 2.31 m long against a published 2.01 m.
+
+Two faults were found in this case that nothing else had exposed.
+
+The reported half-angle came from the diverging length, a parameter a plug nozzle does not use,
+and read 89 degrees where the throat flow angle is 78. The panel now reports the flow angle,
+which is what actually sets the contour.
+
+More seriously, the engine did not flow at all. The chamber sat pinned at 58 bar while nothing
+left the injector, and every one-dimensional figure in the panel looked healthy because none of
+them come from the solver. The cause was the body-fitted mapping: it ramped in over the chamber
+length, which for a metre-scale engine sweeps grid lines radially so fast that axial faces close
+altogether and the duct is sealed. It now ramps over the forebody, where the walls are at
+constant radius and the sweep is gentle, and the duct is open with full apertures from the
+injector to the throat.
+
+That failure is now a check. Every hardware preset is run until its mass flow settles and has to
+be flowing: V-2 92 %, F-1 72 %, RS-25 104 %, XRS-2200 71 %, Traveler IV 90 % of choked. A sealed
+duct reads exactly zero and nothing else in the suite would have caught it.
+
+### When a plug nozzle is worth it
+
+A plug nozzle only earns anything where a bell would be forced to separate, so the question is
+when a bell's usable expansion ratio is small. Sweeping chamber pressure, taking the Summerfield
+criterion p_e/p_a = 0.35 as the bell's limit at sea level, and comparing against a plug carrying
+a vacuum-sized ratio of 150:
+
+| p_c | largest epsilon a bell can carry | mean Isp gain from the plug |
+|---|---|---|
+| 20 bar | 7 | +40 s |
+| 50 bar | 15 | +29 s |
+| 100 bar | 25 | +22 s |
+| 200 bar | 43 | +16 s |
+| 300 bar | 59 | +13 s |
+
+High chamber pressure does the plug nozzle's job for it. At 300 bar a bell already reaches
+within 14 s of the vacuum optimum, which does not pay for a centrebody that has to be cooled and
+a base that has to be filled. At 20 bar the gap is 40 s and the argument changes. This is a
+large part of why aerospikes have not flown: staged combustion arrived first and took most of
+the prize.
+
+The second case has nothing to do with altitude. Throttling drops chamber pressure, which
+over-expands a fixed bell exactly as climbing under-expands it. An epsilon 25 bell at sea level:
+
+| throttle | 100 % | 60 % | 40 % | 30 % | 20 % |
+|---|---|---|---|---|---|
+| p_e/p_a | 0.35 | 0.21 | 0.14 | 0.10 | 0.07 |
+| 1-D Isp | 377 s | 337 s | 286 s | 235 s | 134 s |
+
+Every one of those is separated, with the side loads that go with it. A plug holds its exit
+condition because the plume boundary is ambient pressure rather than a wall. Landing burns and
+boostback are this regime.
+
+So the configurations worth simulating at high expansion ratio are low to moderate chamber
+pressure engines that fly from sea level to vacuum on one nozzle, and anything that throttles
+deeply. Upper stages are not among them: in vacuum there is nothing to compensate and a bell is
+lighter. Neither is Mars ascent, where ambient is already negligible, nor Venus, where the
+optimum ratio is 1.1.
+
+Four things at high expansion ratio are outside what one-dimensional theory can supply, which is
+what makes the simulation worth its cost there. The plume's outer boundary is set by ambient
+pressure and is the compensating mechanism itself. Real spikes are truncated to 20 to 40 % of
+the contour, and at high ratios the spike is slender enough that the base is a large fraction of
+the exit area, with a recirculation pressure that adds to or subtracts from thrust. Below the
+design altitude the flow over the spike carries recompression shocks, and the surface pressure
+distribution under them is the thrust. And a descent burn puts the plume against a supersonic
+freestream with ambient rising through the burn.
+
+These are ideal one-dimensional figures. Summerfield is an approximate criterion, and the plug
+is credited at sea level with the performance of a matched nozzle, which is optimistic by
+perhaps 5 to 10 %.
+
+### Integration bound
+
+The plume has no wall, so the exit-plane integral is bounded by the exhaust tracer. Cumulative
+thrust against integration radius, at epsilon 2.04:
+
+| radius | 20 mm (lip) | 30 mm | 35 mm | 45 mm | 70 mm (domain) |
+|---|---|---|---|---|---|
+| cumulative thrust | 431 N | 921 N | 1195 N | 1213 N | 1176 N |
+
+Flat beyond about 35 mm, varying 1.6 % out to the domain edge, so the integral is converged with
+respect to where it stops.
+
+## Comparison with flown hardware
+
+Four engines whose performance is published, set up from their own chamber conditions and area
+ratio. Nothing is fitted: propellant gamma, molecular weight and flame temperature go in, and
+specific impulse comes out of the area-Mach relation.
+
+| engine | epsilon | Isp sea level | published | Isp vacuum | published |
+|---|---|---|---|---|---|
+| V-2 (A-4), LOX/ethanol, 15 bar | 3.3 | 216 s | 203 s | 252 s | 239 s |
+| F-1, LOX/RP-1, 70 bar | 16 | 276 s | 263 s | 318 s | 304 s |
+| RS-25, LOX/LH2, 206 bar | 69 | 375 s | 366 s | 456 s | 452 s |
+| XRS-2200 aerospike, LOX/LH2, 58 bar | 58 | 210 s | 339 s | 454 s | 439 s |
+
+The first three read high by 6.4 %, 4.9 % and 2.5 % at sea level and 5.4 %, 4.6 % and 0.9 % in
+vacuum. That is the right sign and the right size: these are ideal figures, and a real engine
+delivers the product of its combustion efficiency and its nozzle efficiency, usually 94 to 97 %
+for a large chamber and better for a high-pressure one. Applying 95 % to the V-2 gives 205 s
+against 203 measured, and 95.5 % to the F-1 gives 264 s against 263.
+
+The XRS-2200 row is the one that does not agree, and it is the aerospike point. At sea level a
+bell of area ratio 58 has an exit pressure 0.07 times ambient, and one-dimensional theory,
+which assumes the nozzle flows full, charges the whole (p_e - p_a)*A_e debit and returns 210 s.
+The real aerospike delivers 339 s because its plume boundary is ambient pressure rather than a
+wall, so it does not pay that debit. The 129 s gap is altitude compensation, and it is the
+reason plug nozzles are built. In vacuum, where there is nothing to compensate, the model and
+the engine agree to 3 %.
+
+That case also marks the edge of what this tool can resolve. Set up as an aerospike rather than
+a bell, an area ratio of 58 puts the throat angle at 89 degrees and the annular gap at 1.2 mm on
+a 14 mm throat, which is 2.3 cells at the highest resolution the browser will run. Resolving it
+to the 25 cells the discharge needs would take a radial cell size of 0.03 mm across a 180 mm
+domain, so of order 10^8 cells.
+
+### V-2 at full scale
+
+Modelled at its real dimensions: 203 mm throat, 370 mm exit, 15 bar, LOX/ethanol at 2973 K.
+
+| quantity | model | published |
+|---|---|---|
+| mass flow, 1-D | 123 kg/s | 123 kg/s (55 alcohol + 68 LOX) |
+| thrust, 1-D | 261 kN | 245 kN |
+| Isp, 1-D | 216 s | 203 s |
+| mass flow, measured | 91 kg/s | |
+| thrust, measured | 167 kN | |
+| Isp, measured | 188 s | 203 s |
+
+The 1-D mass flow lands on the published figure exactly, which is an independent check on the
+chosen gamma, molecular weight and flame temperature, since it comes from c\* and the throat
+area alone. The measured block shows the usual pattern: mass flow and thrust each read low, by
+27 % and 36 %, while Isp reads only 7 % low because the two deficits largely cancel in F/mdot.
+At 23 cells across the throat radius but only 12 axially, this nozzle is less well resolved
+along the axis than the reference configuration, and the deficit is correspondingly larger.
+
+### Flying without a fast-forward
+
+Coupling the trajectory to flow time forces a choice between a ratio large enough to reach
+trajectory timescales and one small enough that the flow keeps up with the conditions it is
+being read at. No setting does both, so the coupling is the problem rather than the ratio, and
+bounding it and reporting the residual error was treating a symptom.
+
+Thrust and drag are smooth functions of very few variables. For a choked nozzle neither mass
+flow nor exhaust velocity depends on ambient pressure, so thrust is a straight line in it,
+F = F_vac - p_a*A_e, bending only where the nozzle separates; drag is a dynamic pressure times a
+coefficient that depends on Mach number. Five steady solutions across ambient pressure and eight
+across Mach therefore pin both down, and the trajectory is then integrated against those at
+whatever step the equations of motion want. There is no coupling error left in it at all.
+
+Each steady point runs until the exit-plane thrust stops moving rather than to a fixed flow
+time, gated on the exhaust having reached the measurement plane at all: a thrust of exactly
+zero, which is what the plane reads before the flow arrives, is otherwise perfectly steady and
+passes immediately. A metre-scale engine takes an order of magnitude longer to fill than a
+desk-scale one, and a fixed two milliseconds silently produced decks measured on a flow that had
+not started.
+
+| | deck-flown | published |
+|---|---|---|
+| Traveler IV apogee | 93.9 km | 103.6 +/- 5.0 km |
+| Traveler IV, time to apogee | 147 s | 151 s |
+| Traveler IV, peak speed | 1390 m/s | 1515 m/s |
+| V-2 mass flow | 113 kg/s | 123 kg/s |
+| V-2 burn time | 71 s | 65 s |
+| V-2 sea-level Isp, measured | 202 s | 203 s |
+
+Traveler IV comes out 9 % low on apogee where the fast-forward run was 14 % high, and its
+masses are inferred rather than published, so erring low is the expected direction.
+
+The V-2 comes out at 184 km against the 109 to 134 km its vertical sounding flights reached.
+That gap is not the integrator, which is exact for its inputs, but the masses: sources do not
+agree with each other. Tank capacities total 9,726 kg while 123 kg/s over the published 65 s
+burn is 8,000 kg, and empty mass is quoted anywhere between 3,165 and 4,008 kg depending on
+what is counted. Apogee is roughly as sensitive to the mass ratio as to everything else
+combined; reproducing 121 km needs a burnout mass near 5,400 kg rather than the 4,040 used here.
+The model is reported as it stands rather than tuned to the answer.
+
+Chamber size turned out to matter more than expected. The V-2 preset originally had a chamber
+only 1.5 times the throat area, which leaves the flow already fast at the injector face and cost
+16 points of mass flow. At the real contraction ratio of 5.4 the measured sea-level Isp is 202 s
+against a published 203. The RS-25 preset had the same fault and was corrected to its real 2.95.
+
+### V-2 trajectory
+
+The sounding-rocket configuration, fired vertically: 540 kg of instruments in place of the
+1000 kg warhead, 12,040 kg on the pad. Published V-2 vertical flights from White Sands reached
+109 km, 121 km typical, and 134 km on the Albert II mission.
+
+Propellant mass needs care. The quoted tank capacities total 9,726 kg, but 123 kg/s over the
+published 65 s burn is 8,000 kg, and the larger figure gives a burn time of 79 s and a burnout
+speed well above the 1,600 km/h the vehicle is recorded as reaching. The 8,000 kg consumed
+figure is used here; it reproduces the 65 s burn and the burnout speed together.
+
+| quantity | model | published |
+|---|---|---|
+| mass on the pad | 12,017 kg | 12,040 kg |
+| burn time, 1-D | 64 s | 65 s |
+| burnout speed | 1,439 m/s | 1,600 m/s peak, on the flatter operational trajectory |
+
+Apogee depends on how hard the trajectory is fast-forwarded, because the flow field has to keep
+up with an ambient pressure that is falling underneath it:
+
+| fast-forward | flight seconds per ms of flow | apogee |
+|---|---|---|
+| 10,000x | 10 | 189 km |
+| 3,162x | 3.2 | 157 km |
+| 1,000x | 1.0 | 148 km |
+
+Converging downward towards the observed band from above, and still 10 to 35 % high at the
+lowest fast-forward that finishes in reasonable time. Two contributions: the measured mass flow
+is low, which stretches the burn from 65 s to 90 s and buys extra impulse, and the residual
+fast-forward error. The panel flags the quasi-steady violation in all three of these runs.
+
+### Traveler IV
+
+USC Rocket Propulsion Laboratory, April 2019, the first entirely student-built rocket to pass
+the Karman line. Published: 103.6 km apogee with a stated uncertainty of 5.0 km, 8 inch
+airframe, a solid motor of 42,000 lbf-s total impulse burning for 13 s with a peak thrust of
+21.6 kN, top speed 1,515 m/s, apogee at T+151 s. Masses are not published and are inferred here
+from the total impulse and the reported 17 g peak: 150 kg on the pad, 83 kg of propellant.
+
+| quantity | model | published |
+|---|---|---|
+| burn time | 13 s | 13 s |
+| burnout speed | 1,551 m/s | 1,515 m/s top speed |
+| apogee | 118 km | 103.6 +/- 5.0 km |
+| time to apogee | 165 s | 151 s |
+| peak drag | 2,994 N at Mach 3.3, 8.2 km | not published |
+
+Burnout speed is within 2.4 %. Apogee is 14 % high, of which roughly half is the fast-forward
+error measured on the V-2 above and the rest is the inferred mass and the drag model, which
+excludes skin friction. USCRPL's own six-degree-of-freedom reconstruction needed a 20 % drag
+penalty to match their flight data, so a model that omits skin friction reading high on apogee
+is the expected direction.
+
+### What these cases exercise
+
+The 1-D block is validated to a few percent against flown hardware across a 14:1 range of
+chamber pressure and a 20:1 range of area ratio. The trajectory integrator is validated to
+within about 15 % on apogee, with the residual attributable to two known and separately measured
+effects. The measured CFD block is the weakest link: absolute mass flow and thrust are
+resolution-limited, and only their ratio is reliable.
+
 ## Two-species contact discontinuity
 
 Conservative schemes for multi-component flow can produce spurious pressure oscillations at
@@ -139,8 +693,8 @@ the cell size, so a finer grid costs both more cells and more steps.
 
 ## Shareable links
 
-Encoding a fully non-default configuration, resetting everything, then decoding restores all 45
-settings with zero mismatches. Worst-case length is 342 characters against a commonly cited safe
+Encoding a fully non-default configuration, resetting everything, then decoding restores all 46
+settings with zero mismatches. Worst-case length is 347 characters against a commonly cited safe
 limit of 2000.
 
 Values are clamped to their control's range on the way in and unknown keys are ignored, so a
